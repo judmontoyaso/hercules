@@ -64,11 +64,14 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     feedbackMessage: 'Haz clic en "Activar Cámara" para iniciar'
   });
 
+  const [isBodyDetected, setIsBodyDetected] = useState<boolean>(false);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
+  const lastLandmarkTimestampRef = useRef<number>(-1);
 
   // State machine for rep counting
   const repStateRef = useRef<{
@@ -313,23 +316,38 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-
           const currentTime = video.currentTime;
           if (currentTime !== lastVideoTimeRef.current) {
             lastVideoTimeRef.current = currentTime;
 
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            let nowMs = performance.now();
+            if (nowMs <= lastLandmarkTimestampRef.current) {
+              nowMs = lastLandmarkTimestampRef.current + 1;
+            }
+            lastLandmarkTimestampRef.current = nowMs;
+
             try {
-              const results = landmarker.detectForVideo(video, performance.now());
+              const results = landmarker.detectForVideo(video, nowMs);
 
               if (results.landmarks && results.landmarks.length > 0) {
+                setIsBodyDetected(true);
                 const landmarks = results.landmarks[0];
                 const drawingUtils = new DrawingUtils(ctx);
 
-                // 1. Draw Skeleton Connectors
+                // 1. Draw Skeleton Connectors in Bright Cyan
                 drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
                   color: '#38BDF8',
-                  lineWidth: 3
+                  lineWidth: 4
+                });
+
+                // 2. Draw Joints/Landmarks in Neon Amber
+                drawingUtils.drawLandmarks(landmarks, {
+                  color: '#10B981',
+                  fillColor: '#F59E0B',
+                  lineWidth: 2,
+                  radius: 5
                 });
 
                 // 2. Extract key anatomical landmarks
@@ -432,6 +450,8 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
                 ctx.font = 'bold 16px monospace';
                 ctx.fillStyle = '#FFFFFF';
                 ctx.fillText(`${kneeAngle}°`, kneeCanvasX + 16, kneeCanvasY + 5);
+              } else {
+                setIsBodyDetected(false);
               }
             } catch (detectionErr) {
               console.warn('Detection frame skipped:', detectionErr);
@@ -878,6 +898,26 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
                 >
                   {isCameraStarting ? 'Solicitando Permisos...' : 'Activar Cámara Ahora'}
                 </button>
+              </div>
+            )}
+
+            {/* Body detection guide badge */}
+            {isCameraActive && !isBodyDetected && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 14,
+                  background: 'rgba(15, 23, 42, 0.9)',
+                  border: '1px solid #F59E0B',
+                  color: '#F59E0B',
+                  padding: '6px 12px',
+                  borderRadius: 4,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  zIndex: 20
+                }}
+              >
+                Da unos pasos atrás para que la cámara detecte tus piernas y torso
               </div>
             )}
 

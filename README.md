@@ -76,3 +76,22 @@ npm run build
 - Interfaz oscura técnica (`#050811`, `#090D16`, `#0F172A`, `#1E293B`, `#38BDF8`).
 - Bordes rectilíneos y sobrios (`border-radius: 4px`).
 - Cero emojis: navegación e indicadores puramente tipográficos y vectoriales con Lucide.
+
+
+---
+
+## 8. Capacidades Avanzadas de Visión Artificial en Hercules (Roadmap)
+
+Con la arquitectura de MediaPipe Pose Landmarker en el cliente ($0 USD de infraestructura), las siguientes capacidades biomecánicas son técnicamente viables y escalables:
+
+1. **Velocity Based Training (VBT) y Bar Path Tracking**:
+   - Seguimiento por coordenadas de los extremos de la mancuerna o disco para trazar la línea de trayectoria vertical.
+   - Cálculo de velocidad media concéntrica (m/s) mediante derivadas temporales entre fotogramas ($\Delta y / \Delta t$).
+2. **Predicción Automática de RIR (Reps in Reserve)**:
+   - Medición de la pérdida de velocidad concéntrica (*velocity loss threshold*): cuando la velocidad cae más del 25% respecto a la primera repetición, la IA infiere RIR $\le 2$.
+3. **Análisis de Asimetrías Bilaterales**:
+   - Comparación del ángulo de rodilla izquierda vs. rodilla derecha para alertar sobre dominancia unilateral y torsión pélvica.
+4. **Validación Automática de Tempo (Time Under Tension - TUT)**:
+   - Cronometrado exacto de los segundos en elongación excéntrica, pausa estática y aceleración concéntrica.
+5. **Gamificación y Objetivos de Realidad Aumentada (AR targets)**:
+   - Renderizado de puntos objetivo virtuales en el canvas que el usuario debe interceptar con las manos o pies para asegurar el rango completo de movimiento.

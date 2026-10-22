@@ -16,7 +16,9 @@ import {
   Zap,
   Video,
   ListChecks,
-  HelpCircle
+  HelpCircle,
+  Layers,
+  Sparkles
 } from 'lucide-react';
 
 interface PoseTrackerProps {
@@ -51,6 +53,12 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
   const [layoutMode, setLayoutMode] = useState<'split' | 'stacked' | 'camera'>('split');
   // Reference guide mode: 'simulacion' | 'video' | 'tecnica'
   const [referenceMode, setReferenceMode] = useState<'simulacion' | 'video' | 'tecnica'>('simulacion');
+
+  // Ghost reference skeleton overlay inside the same camera window
+  const [showGhostOverlay, setShowGhostOverlay] = useState<boolean>(true);
+  const [ghostMode, setGhostMode] = useState<'tempo' | 'target'>('tempo');
+  const ghostOpacity = 0.65;
+  const [matchScore, setMatchScore] = useState<number>(90);
 
   // Rep tracking state
   const [repCount, setRepCount] = useState<number>(0);
@@ -336,21 +344,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
                 const landmarks = results.landmarks[0];
                 const drawingUtils = new DrawingUtils(ctx);
 
-                // 1. Draw Skeleton Connectors in Bright Cyan
-                drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
-                  color: '#38BDF8',
-                  lineWidth: 4
-                });
-
-                // 2. Draw Joints/Landmarks in Neon Amber
-                drawingUtils.drawLandmarks(landmarks, {
-                  color: '#10B981',
-                  fillColor: '#F59E0B',
-                  lineWidth: 2,
-                  radius: 5
-                });
-
-                // 2. Extract key anatomical landmarks
+                // Extract key anatomical landmarks
                 const leftHip = landmarks[23];
                 const rightHip = landmarks[24];
                 const leftKnee = landmarks[25];
@@ -368,6 +362,121 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 
                 const kneeAngle = calculateJointAngle(hip, knee, ankle);
                 const hipAngle = calculateJointAngle(shoulder, hip, knee);
+
+                // 1. GHOST REFERENCE SKELETON (Overlaid in same window)
+                let currentMatchPercent = 90;
+
+                if (showGhostOverlay) {
+                  const userAnkleX = ankle.x * canvas.width;
+                  const userAnkleY = ankle.y * canvas.height;
+                  const userShoulderY = shoulder.y * canvas.height;
+                  const userHeightPx = Math.max(120, userAnkleY - userShoulderY);
+
+                  let ghostSinT = 1.0;
+                  if (ghostMode === 'tempo') {
+                    const cycleT = (performance.now() % 3800) / 3800;
+                    ghostSinT = Math.sin(cycleT * Math.PI);
+                  }
+
+                  let ghostKneeX = userAnkleX + (isLeftSide ? 26 : -26) * (1 + 0.25 * ghostSinT);
+                  let ghostKneeY = userAnkleY - userHeightPx * (0.28 - 0.05 * ghostSinT);
+                  let ghostHipX = userAnkleX - (isLeftSide ? 18 : -18) * ghostSinT;
+                  let ghostHipY = userAnkleY - userHeightPx * (0.52 - 0.24 * ghostSinT);
+                  let ghostShoulderX = ghostHipX - (isLeftSide ? 12 : -12) * ghostSinT;
+                  let ghostShoulderY = ghostHipY - userHeightPx * 0.38;
+                  let ghostHeadX = ghostShoulderX;
+                  let ghostHeadY = ghostShoulderY - userHeightPx * 0.12;
+
+                  if (selectedExerciseId === 'romanian-deadlift') {
+                    ghostHipX = userAnkleX - (isLeftSide ? 45 : -45) * ghostSinT;
+                    ghostHipY = userAnkleY - userHeightPx * (0.52 - 0.06 * ghostSinT);
+                    ghostKneeX = userAnkleX - (isLeftSide ? 12 : -12);
+                    ghostKneeY = userAnkleY - userHeightPx * 0.28;
+                    ghostShoulderX = ghostHipX - (isLeftSide ? 40 : -40) * ghostSinT;
+                    ghostShoulderY = ghostHipY - userHeightPx * 0.38 * (1 - 0.45 * ghostSinT);
+                    ghostHeadX = ghostShoulderX;
+                    ghostHeadY = ghostShoulderY - userHeightPx * 0.12;
+                  }
+
+                  const ghostKneeAngle = calculateJointAngle(
+                    { x: ghostHipX, y: ghostHipY },
+                    { x: ghostKneeX, y: ghostKneeY },
+                    { x: userAnkleX, y: userAnkleY }
+                  );
+
+                  const angleDiff = Math.abs(kneeAngle - ghostKneeAngle);
+                  currentMatchPercent = Math.max(0, Math.min(100, Math.round(100 - angleDiff * 1.3)));
+                  setMatchScore(currentMatchPercent);
+
+                  // Draw Ghost Skeleton
+                  ctx.save();
+                  ctx.globalAlpha = ghostOpacity;
+                  ctx.lineWidth = 6;
+                  ctx.lineCap = 'round';
+                  ctx.lineJoin = 'round';
+                  ctx.strokeStyle = currentMatchPercent >= 80 ? '#10B981' : '#F59E0B';
+                  ctx.setLineDash([8, 6]);
+
+                  // Spine
+                  ctx.beginPath();
+                  ctx.moveTo(ghostShoulderX, ghostShoulderY);
+                  ctx.lineTo(ghostHipX, ghostHipY);
+                  ctx.stroke();
+
+                  // Thigh
+                  ctx.beginPath();
+                  ctx.moveTo(ghostHipX, ghostHipY);
+                  ctx.lineTo(ghostKneeX, ghostKneeY);
+                  ctx.stroke();
+
+                  // Shin
+                  ctx.beginPath();
+                  ctx.moveTo(ghostKneeX, ghostKneeY);
+                  ctx.lineTo(userAnkleX, userAnkleY);
+                  ctx.stroke();
+
+                  // Foot
+                  ctx.beginPath();
+                  ctx.moveTo(userAnkleX - 12, userAnkleY);
+                  ctx.lineTo(userAnkleX + 28, userAnkleY);
+                  ctx.stroke();
+
+                  // Head
+                  ctx.beginPath();
+                  ctx.arc(ghostHeadX, ghostHeadY, userHeightPx * 0.06, 0, 2 * Math.PI);
+                  ctx.stroke();
+
+                  // Ghost joints dots
+                  ctx.fillStyle = '#F59E0B';
+                  [
+                    [ghostHeadX, ghostHeadY],
+                    [ghostShoulderX, ghostShoulderY],
+                    [ghostHipX, ghostHipY],
+                    [ghostKneeX, ghostKneeY],
+                    [userAnkleX, userAnkleY]
+                  ].forEach(([gx, gy]) => {
+                    ctx.beginPath();
+                    ctx.arc(gx, gy, 5, 0, 2 * Math.PI);
+                    ctx.fill();
+                  });
+
+                  ctx.setLineDash([]);
+                  ctx.restore();
+                }
+
+                // 2. DRAW REAL USER SKELETON
+                const realSkeletonColor = currentMatchPercent >= 80 ? '#10B981' : '#38BDF8';
+                drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
+                  color: realSkeletonColor,
+                  lineWidth: 4
+                });
+
+                drawingUtils.drawLandmarks(landmarks, {
+                  color: '#10B981',
+                  fillColor: '#F59E0B',
+                  lineWidth: 2,
+                  radius: 5
+                });
 
                 const kneeValgus = Math.abs(leftKnee.x - rightKnee.x) < Math.abs(leftAnkle.x - rightAnkle.x) * 0.75;
                 const torsoTooForward = hipAngle < 65;
@@ -469,7 +578,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
       isRunning = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [isCameraActive, isModelLoaded, selectedExerciseId, onRepCountUpdate, voiceFeedbackEnabled]);
+  }, [isCameraActive, isModelLoaded, selectedExerciseId, onRepCountUpdate, voiceFeedbackEnabled, showGhostOverlay, ghostMode, ghostOpacity]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -901,12 +1010,92 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
               </div>
             )}
 
+            {/* Top Ghost Skeleton Controls & Match Score */}
+            {isCameraActive && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 10,
+                  left: 10,
+                  right: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  zIndex: 25
+                }}
+              >
+                {/* Left: Ghost Toggle & Mode */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(9, 13, 22, 0.9)', border: '1px solid #334155', borderRadius: 4, padding: '3px 8px' }}>
+                  <button
+                    onClick={() => setShowGhostOverlay(!showGhostOverlay)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      background: showGhostOverlay ? '#0284C7' : 'transparent',
+                      color: showGhostOverlay ? '#F8FAFC' : '#94A3B8',
+                      border: 'none',
+                      borderRadius: 3,
+                      padding: '3px 6px',
+                      cursor: 'pointer',
+                      fontSize: 11,
+                      fontWeight: 600
+                    }}
+                  >
+                    <Layers size={13} />
+                    <span>{showGhostOverlay ? 'Esqueleto Guía ON' : 'Esqueleto Guía OFF'}</span>
+                  </button>
+
+                  {showGhostOverlay && (
+                    <button
+                      onClick={() => setGhostMode(ghostMode === 'tempo' ? 'target' : 'tempo')}
+                      style={{
+                        background: '#1E293B',
+                        color: '#38BDF8',
+                        border: '1px solid #334155',
+                        borderRadius: 3,
+                        padding: '3px 6px',
+                        cursor: 'pointer',
+                        fontSize: 10,
+                        fontWeight: 600
+                      }}
+                    >
+                      {ghostMode === 'tempo' ? 'Modo: Tempo (3s)' : 'Modo: Meta (90°)'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Right: Real-time Match Score Badge */}
+                {showGhostOverlay && isBodyDetected && (
+                  <div
+                    style={{
+                      background: matchScore >= 80 ? 'rgba(6, 78, 59, 0.92)' : 'rgba(120, 53, 15, 0.92)',
+                      border: '1px solid',
+                      borderColor: matchScore >= 80 ? '#10B981' : '#F59E0B',
+                      borderRadius: 4,
+                      padding: '4px 10px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6
+                    }}
+                  >
+                    <Sparkles size={13} color={matchScore >= 80 ? '#10B981' : '#F59E0B'} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#F8FAFC' }}>
+                      Calce con Guía: {matchScore}%
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Body detection guide badge */}
             {isCameraActive && !isBodyDetected && (
               <div
                 style={{
                   position: 'absolute',
-                  top: 14,
+                  top: 52,
                   background: 'rgba(15, 23, 42, 0.9)',
                   border: '1px solid #F59E0B',
                   color: '#F59E0B',

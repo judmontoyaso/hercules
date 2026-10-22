@@ -9,7 +9,8 @@ import {
   VolumeX,
   RotateCcw,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 
 interface PoseTrackerProps {
@@ -33,8 +34,10 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 }) => {
   const [selectedExerciseId, setSelectedExerciseId] = useState<string>(initialExerciseId);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
-  const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false);
-  const [modelError, setModelError] = useState<string | null>(null);
+  const [isCameraStarting, setIsCameraStarting] = useState<boolean>(false);
+  const [isModelLoaded, setIsModelLoaded] = useState<boolean>(false);
+  const [modelStatusText, setModelStatusText] = useState<string>('Iniciando red neuronal...');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [voiceFeedbackEnabled, setVoiceFeedbackEnabled] = useState<boolean>(true);
 
   // Rep tracking state
@@ -46,7 +49,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     kneeValgusWarning: false,
     torsoWarning: false,
     phase: 'ARRIBA',
-    feedbackMessage: 'Párate frente a la cámara de cuerpo completo para iniciar'
+    feedbackMessage: 'Haz clic en "Activar Cámara" para iniciar'
   });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -76,7 +79,6 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
 
     const now = Date.now();
-    // Throttle voice feedback to max once every 2.5 seconds unless forced (rep completed)
     if (!force && now - repStateRef.current.lastVoiceTimestamp < 2500) {
       return;
     }
@@ -95,22 +97,24 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     }
   };
 
-  // Initialize MediaPipe PoseLandmarker
-  useEffect(() => {
-    let isCancelled = false;
+  // Initialize MediaPipe PoseLandmarker with GPU and CPU fallback
+  const initMediaPipe = async () => {
+    if (poseLandmarkerRef.current) return;
 
-    const initMediaPipe = async () => {
+    try {
+      setModelStatusText('Descargando motor MediaPipe WASM...');
+
+      const vision = await FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+      );
+
+      setModelStatusText('Inicializando modelo PoseLandmarker...');
+
+      let landmarker: PoseLandmarker | null = null;
+
+      // Attempt 1: Try GPU delegate
       try {
-        setIsLoadingModel(true);
-        setModelError(null);
-
-        const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-        );
-
-        if (isCancelled) return;
-
-        const landmarker = await PoseLandmarker.createFromOptions(vision, {
+        landmarker = await PoseLandmarker.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath:
               'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
@@ -122,54 +126,133 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
           minPosePresenceConfidence: 0.5,
           minTrackingConfidence: 0.5
         });
-
-        if (isCancelled) return;
-        poseLandmarkerRef.current = landmarker;
-        setIsLoadingModel(false);
-      } catch (err: unknown) {
-        console.error('Failed to load MediaPipe model:', err);
-        if (!isCancelled) {
-          setModelError(
-            'No se pudo cargar el modelo de visión. Verifica tu conexión a internet o intenta recargar.'
-          );
-          setIsLoadingModel(false);
-        }
+      } catch (gpuError) {
+        console.warn('GPU delegate failed, falling back to CPU delegate:', gpuError);
+        // Attempt 2: Fallback to CPU delegate
+        landmarker = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+            delegate: 'CPU'
+          },
+          runningMode: 'VIDEO',
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
       }
-    };
 
+      poseLandmarkerRef.current = landmarker;
+      setIsModelLoaded(true);
+      setModelStatusText('Modelo IA listo');
+    } catch (err: unknown) {
+      console.error('Failed to load MediaPipe model:', err);
+      setModelStatusText('Error al cargar modelo IA');
+      setErrorMessage(
+        'No se pudo descargar el modelo de visión de MediaPipe. Revisa tu conexión a internet.'
+      );
+    }
+  };
+
+  useEffect(() => {
     initMediaPipe();
 
     return () => {
-      isCancelled = true;
       if (poseLandmarkerRef.current) {
         poseLandmarkerRef.current.close();
+        poseLandmarkerRef.current = null;
       }
     };
   }, []);
 
-  // Start webcam
+  // Start webcam with robust permission handling
   const startCamera = async () => {
-    try {
-      setModelError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: 'user'
-        },
-        audio: false
-      });
+    setErrorMessage(null);
+    setIsCameraStarting(true);
 
-      if (videoRef.current) {
+    // 1. Check secure context requirement
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      const isLocalhost =
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1';
+
+      if (!isLocalhost) {
+        setErrorMessage(
+          'El navegador bloquea la cámara en conexiones HTTP externas. Por favor, abre la aplicación usando HTTPS o desde http://localhost:5173'
+        );
+        setIsCameraStarting(false);
+        return;
+      }
+    }
+
+    // 2. Check if mediaDevices is supported
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setErrorMessage(
+        'Tu navegador o dispositivo no soporta la API de cámara navigator.mediaDevices. Prueba abriendo la aplicación en Google Chrome, Safari o Edge moderno.'
+      );
+      setIsCameraStarting(false);
+      return;
+    }
+
+    try {
+      let stream: MediaStream | null = null;
+
+      // Try preferred constraints
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
+        });
+      } catch (constraintErr) {
+        console.warn('Preferred constraints failed, trying basic video:true', constraintErr);
+        // Fallback to basic constraint
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
+
+      if (videoRef.current && stream) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
-          setIsCameraActive(true);
+          videoRef.current?.play().then(() => {
+            setIsCameraActive(true);
+            setIsCameraStarting(false);
+            // If model is not loaded yet, retry loading it
+            if (!poseLandmarkerRef.current) {
+              initMediaPipe();
+            }
+          }).catch((playErr) => {
+            console.error('Video play error:', playErr);
+            setIsCameraStarting(false);
+          });
         };
       }
     } catch (err: unknown) {
-      console.error('Camera access error:', err);
-      setModelError('No se pudo acceder a la cámara web. Revisa los permisos en tu navegador.');
+      console.error('Camera permission/access error:', err);
+      setIsCameraStarting(false);
+      const errorObj = err as { name?: string; message?: string };
+
+      if (errorObj.name === 'NotAllowedError' || errorObj.name === 'PermissionDeniedError') {
+        setErrorMessage(
+          'Permiso denegado: El navegador o el sistema operativo bloquearon el acceso a la cámara. Haz clic en el ícono de candado o cámara a la izquierda de la URL en tu navegador y selecciona "Permitir".'
+        );
+      } else if (errorObj.name === 'NotFoundError' || errorObj.name === 'DevicesNotFoundError') {
+        setErrorMessage(
+          'No se encontró ninguna cámara conectada en tu equipo. Conecta una cámara web o verifica tus controladores.'
+        );
+      } else if (errorObj.name === 'NotReadableError' || errorObj.name === 'TrackStartError') {
+        setErrorMessage(
+          'La cámara está siendo utilizada por otra aplicación (ej. Zoom, Teams o Meet). Ciérrala e inténtalo de nuevo.'
+        );
+      } else {
+        setErrorMessage(`Error al acceder a la cámara: ${errorObj.message || 'Error desconocido'}`);
+      }
     }
   };
 
@@ -184,12 +267,13 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
       cancelAnimationFrame(animFrameRef.current);
     }
     setIsCameraActive(false);
+    setIsCameraStarting(false);
   };
 
-  // Compute 3D angle between three landmarks in degrees (e.g. Hip-Knee-Ankle)
+  // Compute 3D angle between three landmarks in degrees
   const calculateJointAngle = (
     a: { x: number; y: number; z?: number },
-    b: { x: number; y: number; z?: number }, // Vertex (knee or hip)
+    b: { x: number; y: number; z?: number },
     c: { x: number; y: number; z?: number }
   ): number => {
     const ba = { x: a.x - b.x, y: a.y - b.y };
@@ -233,128 +317,122 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
           if (currentTime !== lastVideoTimeRef.current) {
             lastVideoTimeRef.current = currentTime;
 
-            const results = landmarker.detectForVideo(video, performance.now());
+            try {
+              const results = landmarker.detectForVideo(video, performance.now());
 
-            if (results.landmarks && results.landmarks.length > 0) {
-              const landmarks = results.landmarks[0];
-              const drawingUtils = new DrawingUtils(ctx);
+              if (results.landmarks && results.landmarks.length > 0) {
+                const landmarks = results.landmarks[0];
+                const drawingUtils = new DrawingUtils(ctx);
 
-              // 1. Draw Skeleton Connectors
-              drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
-                color: '#38BDF8',
-                lineWidth: 3
-              });
+                // 1. Draw Skeleton Connectors
+                drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
+                  color: '#38BDF8',
+                  lineWidth: 3
+                });
 
-              // 2. Extract key anatomical landmarks
-              // Index 11/12: Shoulders, 23/24: Hips, 25/26: Knees, 27/28: Ankles
-              const leftHip = landmarks[23];
-              const rightHip = landmarks[24];
-              const leftKnee = landmarks[25];
-              const rightKnee = landmarks[26];
-              const leftAnkle = landmarks[27];
-              const rightAnkle = landmarks[28];
-              const leftShoulder = landmarks[11];
-              const rightShoulder = landmarks[12];
+                // 2. Extract key anatomical landmarks
+                const leftHip = landmarks[23];
+                const rightHip = landmarks[24];
+                const leftKnee = landmarks[25];
+                const rightKnee = landmarks[26];
+                const leftAnkle = landmarks[27];
+                const rightAnkle = landmarks[28];
+                const leftShoulder = landmarks[11];
+                const rightShoulder = landmarks[12];
 
-              // Pick the side with higher visibility/presence
-              const isLeftSide = (leftKnee.visibility ?? 0) >= (rightKnee.visibility ?? 0);
-              const hip = isLeftSide ? leftHip : rightHip;
-              const knee = isLeftSide ? leftKnee : rightKnee;
-              const ankle = isLeftSide ? leftAnkle : rightAnkle;
-              const shoulder = isLeftSide ? leftShoulder : rightShoulder;
+                const isLeftSide = (leftKnee.visibility ?? 0) >= (rightKnee.visibility ?? 0);
+                const hip = isLeftSide ? leftHip : rightHip;
+                const knee = isLeftSide ? leftKnee : rightKnee;
+                const ankle = isLeftSide ? leftAnkle : rightAnkle;
+                const shoulder = isLeftSide ? leftShoulder : rightShoulder;
 
-              // Calculate angles
-              const kneeAngle = calculateJointAngle(hip, knee, ankle);
-              const hipAngle = calculateJointAngle(shoulder, hip, knee);
+                const kneeAngle = calculateJointAngle(hip, knee, ankle);
+                const hipAngle = calculateJointAngle(shoulder, hip, knee);
 
-              // Check Valgus (Knee x position relative to hip and ankle)
-              const kneeValgus = Math.abs(leftKnee.x - rightKnee.x) < Math.abs(leftAnkle.x - rightAnkle.x) * 0.75;
+                const kneeValgus = Math.abs(leftKnee.x - rightKnee.x) < Math.abs(leftAnkle.x - rightAnkle.x) * 0.75;
+                const torsoTooForward = hipAngle < 65;
+                const depthReached = kneeAngle <= 95;
 
-              // Torso pitch warning (too forward in squat)
-              const torsoTooForward = hipAngle < 65;
+                // State Machine for Repetitions
+                const stateRef = repStateRef.current;
+                let currentPhase: 'ARRIBA' | 'DESCENDIENDO' | 'FONDO' | 'SUBIENDO' = 'ARRIBA';
+                let message = 'Mantén la postura erguida';
 
-              // Determine Depth
-              const depthReached = kneeAngle <= 95;
+                if (kneeAngle > 140) {
+                  if (stateRef.state === 'GOING_UP' && stateRef.minKneeAngle <= 100) {
+                    setRepCount((prev) => {
+                      const next = prev + 1;
+                      audioEngine.playSetComplete();
+                      speakFeedback(`Repetición ${next}`, true);
+                      if (onRepCountUpdate) onRepCountUpdate(selectedExerciseId, next);
+                      return next;
+                    });
+                    stateRef.state = 'TOP';
+                    stateRef.minKneeAngle = 180;
+                  } else {
+                    stateRef.state = 'TOP';
+                    currentPhase = 'ARRIBA';
+                    message = 'Inicia el descenso controlado';
+                  }
+                } else if (kneeAngle <= 140 && kneeAngle > 105) {
+                  if (stateRef.state === 'TOP' || stateRef.state === 'GOING_DOWN') {
+                    stateRef.state = 'GOING_DOWN';
+                    currentPhase = 'DESCENDIENDO';
+                    message = 'Bajando... busca profundidad paralela';
+                  } else if (stateRef.state === 'BOTTOM' || stateRef.state === 'GOING_UP') {
+                    stateRef.state = 'GOING_UP';
+                    currentPhase = 'SUBIENDO';
+                    message = 'Empuja el piso con fuerza';
+                  }
+                } else if (kneeAngle <= 105) {
+                  stateRef.state = 'BOTTOM';
+                  currentPhase = 'FONDO';
+                  stateRef.minKneeAngle = Math.min(stateRef.minKneeAngle, kneeAngle);
 
-              // State Machine for Repetitions
-              const stateRef = repStateRef.current;
-              let currentPhase: 'ARRIBA' | 'DESCENDIENDO' | 'FONDO' | 'SUBIENDO' = 'ARRIBA';
-              let message = 'Mantén la postura erguida';
-
-              if (kneeAngle > 140) {
-                if (stateRef.state === 'GOING_UP' && stateRef.minKneeAngle <= 100) {
-                  // Repetition completed!
-                  setRepCount((prev) => {
-                    const next = prev + 1;
-                    audioEngine.playSetComplete();
-                    speakFeedback(`Repetición ${next}`, true);
-                    if (onRepCountUpdate) onRepCountUpdate(selectedExerciseId, next);
-                    return next;
-                  });
-                  stateRef.state = 'TOP';
-                  stateRef.minKneeAngle = 180;
-                } else {
-                  stateRef.state = 'TOP';
-                  currentPhase = 'ARRIBA';
-                  message = 'Inicia el descenso controlado';
+                  if (kneeAngle <= 90) {
+                    message = 'Profundidad perfecta. ¡Sube!';
+                  } else {
+                    message = 'Baja 3 cm más para romper el paralelo';
+                    speakFeedback('Baja un poco más');
+                  }
                 }
-              } else if (kneeAngle <= 140 && kneeAngle > 105) {
-                if (stateRef.state === 'TOP' || stateRef.state === 'GOING_DOWN') {
-                  stateRef.state = 'GOING_DOWN';
-                  currentPhase = 'DESCENDIENDO';
-                  message = 'Bajando... busca profundidad paralela';
-                } else if (stateRef.state === 'BOTTOM' || stateRef.state === 'GOING_UP') {
-                  stateRef.state = 'GOING_UP';
-                  currentPhase = 'SUBIENDO';
-                  message = 'Empuja el piso con fuerza';
-                }
-              } else if (kneeAngle <= 105) {
-                stateRef.state = 'BOTTOM';
-                currentPhase = 'FONDO';
-                stateRef.minKneeAngle = Math.min(stateRef.minKneeAngle, kneeAngle);
 
-                if (kneeAngle <= 90) {
-                  message = 'Profundidad perfecta. ¡Sube!';
-                } else {
-                  message = 'Baja 3 cm más para romper el paralelo';
-                  speakFeedback('Baja un poco más');
+                if (kneeValgus) {
+                  message = 'Atención: Rodillas hacia afuera, no las juntes';
+                  speakFeedback('Abre las rodillas');
+                } else if (torsoTooForward && selectedExerciseId === 'goblet-squat') {
+                  message = 'Levanta el pecho, torso más erguido';
+                  speakFeedback('Pecho arriba');
                 }
+
+                setCurrentAnalysis({
+                  kneeAngleDeg: kneeAngle,
+                  hipAngleDeg: hipAngle,
+                  depthReached,
+                  kneeValgusWarning: kneeValgus,
+                  torsoWarning: torsoTooForward,
+                  phase: currentPhase,
+                  feedbackMessage: message
+                });
+
+                // Highlight working knee joint on canvas
+                const kneeCanvasX = knee.x * canvas.width;
+                const kneeCanvasY = knee.y * canvas.height;
+
+                ctx.beginPath();
+                ctx.arc(kneeCanvasX, kneeCanvasY, 10, 0, 2 * Math.PI);
+                ctx.fillStyle = depthReached ? '#10B981' : kneeValgus ? '#EF4444' : '#F59E0B';
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.stroke();
+
+                ctx.font = 'bold 16px monospace';
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText(`${kneeAngle}°`, kneeCanvasX + 16, kneeCanvasY + 5);
               }
-
-              if (kneeValgus) {
-                message = 'Atención: Rodillas hacia afuera, no las juntes';
-                speakFeedback('Abre las rodillas');
-              } else if (torsoTooForward && selectedExerciseId === 'goblet-squat') {
-                message = 'Levanta el pecho, torso más erguido';
-                speakFeedback('Pecho arriba');
-              }
-
-              setCurrentAnalysis({
-                kneeAngleDeg: kneeAngle,
-                hipAngleDeg: hipAngle,
-                depthReached,
-                kneeValgusWarning: kneeValgus,
-                torsoWarning: torsoTooForward,
-                phase: currentPhase,
-                feedbackMessage: message
-              });
-
-              // Highlight working joint on canvas
-              const kneeCanvasX = knee.x * canvas.width;
-              const kneeCanvasY = knee.y * canvas.height;
-
-              ctx.beginPath();
-              ctx.arc(kneeCanvasX, kneeCanvasY, 10, 0, 2 * Math.PI);
-              ctx.fillStyle = depthReached ? '#10B981' : kneeValgus ? '#EF4444' : '#F59E0B';
-              ctx.fill();
-              ctx.lineWidth = 2;
-              ctx.strokeStyle = '#FFFFFF';
-              ctx.stroke();
-
-              // Draw angle text next to knee
-              ctx.font = 'bold 16px monospace';
-              ctx.fillStyle = '#FFFFFF';
-              ctx.fillText(`${kneeAngle}°`, kneeCanvasX + 16, kneeCanvasY + 5);
+            } catch (detectionErr) {
+              console.warn('Detection frame skipped:', detectionErr);
             }
           }
         }
@@ -369,7 +447,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
       isRunning = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [isCameraActive, selectedExerciseId, onRepCountUpdate, voiceFeedbackEnabled]);
+  }, [isCameraActive, isModelLoaded, selectedExerciseId, onRepCountUpdate, voiceFeedbackEnabled]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -403,7 +481,9 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
             >
               VISIÓN ARTIFICIAL ON-DEVICE (0$ USD)
             </span>
-            <span style={{ fontSize: 11, color: '#64748B' }}>Google MediaPipe Pose</span>
+            <span style={{ fontSize: 11, color: isModelLoaded ? '#10B981' : '#F59E0B' }}>
+              ● {modelStatusText}
+            </span>
           </div>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#F8FAFC' }}>
             Corrección en Vivo: {currentExercise.name}
@@ -458,23 +538,23 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
           {!isCameraActive ? (
             <button
               onClick={startCamera}
-              disabled={isLoadingModel}
+              disabled={isCameraStarting}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
                 padding: '8px 16px',
-                background: isLoadingModel ? '#1E293B' : '#0284C7',
+                background: '#0284C7',
                 color: '#F8FAFC',
                 border: 'none',
                 borderRadius: 4,
-                cursor: isLoadingModel ? 'wait' : 'pointer',
+                cursor: isCameraStarting ? 'wait' : 'pointer',
                 fontWeight: 600,
                 fontSize: 13
               }}
             >
-              <Camera size={15} />
-              <span>{isLoadingModel ? 'Cargando Modelo...' : 'Activar Cámara'}</span>
+              {isCameraStarting ? <RefreshCw size={15} className="spin" /> : <Camera size={15} />}
+              <span>{isCameraStarting ? 'Iniciando Cámara...' : 'Activar Cámara'}</span>
             </button>
           ) : (
             <button
@@ -501,22 +581,25 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
       </div>
 
       {/* Model Loading / Error alert */}
-      {modelError && (
+      {errorMessage && (
         <div
           style={{
             background: '#450A0A',
             border: '1px solid #991B1B',
             color: '#FCA5A5',
-            padding: '10px 14px',
+            padding: '12px 16px',
             borderRadius: 4,
-            fontSize: 12,
+            fontSize: 13,
+            lineHeight: 1.5,
             display: 'flex',
-            alignItems: 'center',
-            gap: 8
+            alignItems: 'flex-start',
+            gap: 10
           }}
         >
-          <AlertTriangle size={16} />
-          <span>{modelError}</span>
+          <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <strong>Atención:</strong> {errorMessage}
+          </div>
         </div>
       )}
 
@@ -563,26 +646,29 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 
           {/* Fallback placeholder when camera is not on */}
           {!isCameraActive && (
-            <div style={{ textAlign: 'center', color: '#64748B', padding: 24, zIndex: 10 }}>
+            <div style={{ textAlign: 'center', color: '#64748B', padding: 24, zIndex: 10, maxWidth: 380 }}>
               <Camera size={48} style={{ margin: '0 auto 12px auto', strokeWidth: 1.5, color: '#334155' }} />
-              <p style={{ margin: '0 0 10px 0', fontSize: 14, color: '#94A3B8' }}>
-                La cámara está apagada
+              <p style={{ margin: '0 0 12px 0', fontSize: 14, color: '#CBD5E1', fontWeight: 600 }}>
+                La cámara está desactivada
+              </p>
+              <p style={{ margin: '0 0 16px 0', fontSize: 12, color: '#94A3B8', lineHeight: 1.5 }}>
+                Haz clic abajo para iniciar. Tu navegador solicitará permiso para acceder a la cámara.
               </p>
               <button
                 onClick={startCamera}
-                disabled={isLoadingModel}
+                disabled={isCameraStarting}
                 style={{
-                  padding: '8px 16px',
+                  padding: '10px 20px',
                   background: '#0284C7',
                   color: '#F8FAFC',
                   border: 'none',
                   borderRadius: 4,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: 'pointer'
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: isCameraStarting ? 'wait' : 'pointer'
                 }}
               >
-                Activar Cámara para Entrenar
+                {isCameraStarting ? 'Solicitando Permisos...' : 'Activar Cámara Ahora'}
               </button>
             </div>
           )}

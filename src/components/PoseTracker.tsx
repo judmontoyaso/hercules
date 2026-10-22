@@ -2,15 +2,21 @@ import React, { useState, useEffect, useRef } from 'react';
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
 import { EXERCISES } from '../data/exercises';
 import { audioEngine } from '../utils/audio';
+import { BiomechanicalSimulation } from './BiomechanicalSimulation';
 import {
   Camera,
   VideoOff,
   Volume2,
   VolumeX,
   RotateCcw,
-  CheckCircle2,
-  AlertTriangle,
-  RefreshCw
+  RefreshCw,
+  Columns,
+  Rows,
+  Maximize2,
+  Zap,
+  Video,
+  ListChecks,
+  HelpCircle
 } from 'lucide-react';
 
 interface PoseTrackerProps {
@@ -38,7 +44,13 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
   const [isModelLoaded, setIsModelLoaded] = useState<boolean>(false);
   const [modelStatusText, setModelStatusText] = useState<string>('Iniciando red neuronal...');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showPermissionHelp, setShowPermissionHelp] = useState<boolean>(false);
   const [voiceFeedbackEnabled, setVoiceFeedbackEnabled] = useState<boolean>(true);
+
+  // Layout states: 'split' (Lado a lado), 'stacked' (Arriba y abajo), 'camera' (Solo cámara)
+  const [layoutMode, setLayoutMode] = useState<'split' | 'stacked' | 'camera'>('split');
+  // Reference guide mode: 'simulacion' | 'video' | 'tecnica'
+  const [referenceMode, setReferenceMode] = useState<'simulacion' | 'video' | 'tecnica'>('simulacion');
 
   // Rep tracking state
   const [repCount, setRepCount] = useState<number>(0);
@@ -97,7 +109,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     }
   };
 
-  // Initialize MediaPipe PoseLandmarker with GPU and CPU fallback
+  // Initialize MediaPipe PoseLandmarker
   const initMediaPipe = async () => {
     if (poseLandmarkerRef.current) return;
 
@@ -112,7 +124,6 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 
       let landmarker: PoseLandmarker | null = null;
 
-      // Attempt 1: Try GPU delegate
       try {
         landmarker = await PoseLandmarker.createFromOptions(vision, {
           baseOptions: {
@@ -127,8 +138,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
           minTrackingConfidence: 0.5
         });
       } catch (gpuError) {
-        console.warn('GPU delegate failed, falling back to CPU delegate:', gpuError);
-        // Attempt 2: Fallback to CPU delegate
+        console.warn('GPU delegate fallback to CPU:', gpuError);
         landmarker = await PoseLandmarker.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath:
@@ -171,7 +181,6 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     setErrorMessage(null);
     setIsCameraStarting(true);
 
-    // 1. Check secure context requirement
     if (typeof window !== 'undefined' && window.isSecureContext === false) {
       const isLocalhost =
         window.location.hostname === 'localhost' ||
@@ -179,18 +188,19 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 
       if (!isLocalhost) {
         setErrorMessage(
-          'El navegador bloquea la cámara en conexiones HTTP externas. Por favor, abre la aplicación usando HTTPS o desde http://localhost:5173'
+          'El navegador bloquea la cámara en conexiones HTTP no seguras. Abre la app usando HTTPS (https://localhost:5173).'
         );
+        setShowPermissionHelp(true);
         setIsCameraStarting(false);
         return;
       }
     }
 
-    // 2. Check if mediaDevices is supported
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setErrorMessage(
-        'Tu navegador o dispositivo no soporta la API de cámara navigator.mediaDevices. Prueba abriendo la aplicación en Google Chrome, Safari o Edge moderno.'
+        'Tu navegador no soporta o bloquea la cámara web. Abre la aplicación en Chrome o Edge moderno.'
       );
+      setShowPermissionHelp(true);
       setIsCameraStarting(false);
       return;
     }
@@ -198,7 +208,6 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     try {
       let stream: MediaStream | null = null;
 
-      // Try preferred constraints
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -209,8 +218,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
           audio: false
         });
       } catch (constraintErr) {
-        console.warn('Preferred constraints failed, trying basic video:true', constraintErr);
-        // Fallback to basic constraint
+        console.warn('Fallback to basic video:true constraint', constraintErr);
         stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: false
@@ -223,7 +231,6 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
           videoRef.current?.play().then(() => {
             setIsCameraActive(true);
             setIsCameraStarting(false);
-            // If model is not loaded yet, retry loading it
             if (!poseLandmarkerRef.current) {
               initMediaPipe();
             }
@@ -234,29 +241,25 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
         };
       }
     } catch (err: unknown) {
-      console.error('Camera permission/access error:', err);
+      console.error('Camera access error:', err);
       setIsCameraStarting(false);
+      setShowPermissionHelp(true);
       const errorObj = err as { name?: string; message?: string };
 
       if (errorObj.name === 'NotAllowedError' || errorObj.name === 'PermissionDeniedError') {
         setErrorMessage(
-          'Permiso denegado: El navegador o el sistema operativo bloquearon el acceso a la cámara. Haz clic en el ícono de candado o cámara a la izquierda de la URL en tu navegador y selecciona "Permitir".'
+          'Permiso bloqueado: Haz clic en el ícono de candado/ajustes a la izquierda de la URL en la barra de direcciones de tu navegador y cambia Cámara a "Permitir".'
         );
       } else if (errorObj.name === 'NotFoundError' || errorObj.name === 'DevicesNotFoundError') {
-        setErrorMessage(
-          'No se encontró ninguna cámara conectada en tu equipo. Conecta una cámara web o verifica tus controladores.'
-        );
+        setErrorMessage('No se detectó ninguna cámara conectada.');
       } else if (errorObj.name === 'NotReadableError' || errorObj.name === 'TrackStartError') {
-        setErrorMessage(
-          'La cámara está siendo utilizada por otra aplicación (ej. Zoom, Teams o Meet). Ciérrala e inténtalo de nuevo.'
-        );
+        setErrorMessage('La cámara está en uso por otra app (Zoom, Teams, Meet).');
       } else {
-        setErrorMessage(`Error al acceder a la cámara: ${errorObj.message || 'Error desconocido'}`);
+        setErrorMessage(`Error de cámara: ${errorObj.message || 'Error desconocido'}`);
       }
     }
   };
 
-  // Stop webcam
   const stopCamera = () => {
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
@@ -270,7 +273,6 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
     setIsCameraStarting(false);
   };
 
-  // Compute 3D angle between three landmarks in degrees
   const calculateJointAngle = (
     a: { x: number; y: number; z?: number },
     b: { x: number; y: number; z?: number },
@@ -451,7 +453,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Top Banner */}
+      {/* Top Banner & Mode Selectors */}
       <div
         style={{
           background: '#090D16',
@@ -486,12 +488,13 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
             </span>
           </div>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#F8FAFC' }}>
-            Corrección en Vivo: {currentExercise.name}
+            Entrenador IA: {currentExercise.name}
           </h2>
         </div>
 
-        {/* Action Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Layout & Control Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {/* Exercise Selector */}
           <select
             value={selectedExerciseId}
             onChange={(e) => {
@@ -515,6 +518,68 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
             ))}
           </select>
 
+          {/* Layout Mode Switcher */}
+          <div style={{ display: 'flex', background: '#0F172A', border: '1px solid #334155', borderRadius: 4, padding: 2 }}>
+            <button
+              onClick={() => setLayoutMode('split')}
+              title="Vista Lado a Lado (Guía + Cámara)"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '4px 8px',
+                background: layoutMode === 'split' ? '#1E293B' : 'transparent',
+                color: layoutMode === 'split' ? '#38BDF8' : '#94A3B8',
+                border: 'none',
+                borderRadius: 3,
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              <Columns size={13} />
+              <span>Lado a Lado</span>
+            </button>
+            <button
+              onClick={() => setLayoutMode('stacked')}
+              title="Vista Arriba y Abajo (Móvil)"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '4px 8px',
+                background: layoutMode === 'stacked' ? '#1E293B' : 'transparent',
+                color: layoutMode === 'stacked' ? '#38BDF8' : '#94A3B8',
+                border: 'none',
+                borderRadius: 3,
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              <Rows size={13} />
+              <span>Arriba/Abajo</span>
+            </button>
+            <button
+              onClick={() => setLayoutMode('camera')}
+              title="Solo Cámara Maximizado"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '4px 8px',
+                background: layoutMode === 'camera' ? '#1E293B' : 'transparent',
+                color: layoutMode === 'camera' ? '#38BDF8' : '#94A3B8',
+                border: 'none',
+                borderRadius: 3,
+                cursor: 'pointer',
+                fontSize: 11
+              }}
+            >
+              <Maximize2 size={13} />
+              <span>Solo Cámara</span>
+            </button>
+          </div>
+
+          {/* Voice Feedback Toggle */}
           <button
             onClick={() => setVoiceFeedbackEnabled(!voiceFeedbackEnabled)}
             style={{
@@ -535,6 +600,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
             <span>{voiceFeedbackEnabled ? 'Voz On' : 'Voz Off'}</span>
           </button>
 
+          {/* Camera On / Off Button */}
           {!isCameraActive ? (
             <button
               onClick={startCamera}
@@ -554,7 +620,7 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
               }}
             >
               {isCameraStarting ? <RefreshCw size={15} className="spin" /> : <Camera size={15} />}
-              <span>{isCameraStarting ? 'Iniciando Cámara...' : 'Activar Cámara'}</span>
+              <span>{isCameraStarting ? 'Iniciando...' : 'Activar Cámara'}</span>
             </button>
           ) : (
             <button
@@ -580,286 +646,377 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
         </div>
       </div>
 
-      {/* Model Loading / Error alert */}
-      {errorMessage && (
+      {/* Permission troubleshooting box */}
+      {(errorMessage || showPermissionHelp) && (
         <div
           style={{
-            background: '#450A0A',
-            border: '1px solid #991B1B',
-            color: '#FCA5A5',
-            padding: '12px 16px',
+            background: '#1E1B4B',
+            border: '1px solid #4338CA',
+            color: '#E0E7FF',
+            padding: '14px 18px',
             borderRadius: 4,
             fontSize: 13,
-            lineHeight: 1.5,
+            lineHeight: 1.6,
             display: 'flex',
-            alignItems: 'flex-start',
-            gap: 10
+            flexDirection: 'column',
+            gap: 8
           }}
         >
-          <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: 2 }} />
-          <div>
-            <strong>Atención:</strong> {errorMessage}
-          </div>
-        </div>
-      )}
-
-      {/* Main Video & HUD Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1.4fr) minmax(280px, 1fr)', gap: 16 }}>
-        {/* Video Canvas Box */}
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            height: 480,
-            background: '#030712',
-            border: '1px solid #1E293B',
-            borderRadius: 4,
-            overflow: 'hidden',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}
-        >
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            style={{
-              position: 'absolute',
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
-              transform: 'scaleX(-1)' // Mirror for natural training feel
-            }}
-          />
-
-          <canvas
-            ref={canvasRef}
-            style={{
-              position: 'absolute',
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
-              transform: 'scaleX(-1)'
-            }}
-          />
-
-          {/* Fallback placeholder when camera is not on */}
-          {!isCameraActive && (
-            <div style={{ textAlign: 'center', color: '#64748B', padding: 24, zIndex: 10, maxWidth: 380 }}>
-              <Camera size={48} style={{ margin: '0 auto 12px auto', strokeWidth: 1.5, color: '#334155' }} />
-              <p style={{ margin: '0 0 12px 0', fontSize: 14, color: '#CBD5E1', fontWeight: 600 }}>
-                La cámara está desactivada
-              </p>
-              <p style={{ margin: '0 0 16px 0', fontSize: 12, color: '#94A3B8', lineHeight: 1.5 }}>
-                Haz clic abajo para iniciar. Tu navegador solicitará permiso para acceder a la cámara.
-              </p>
-              <button
-                onClick={startCamera}
-                disabled={isCameraStarting}
-                style={{
-                  padding: '10px 20px',
-                  background: '#0284C7',
-                  color: '#F8FAFC',
-                  border: 'none',
-                  borderRadius: 4,
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: isCameraStarting ? 'wait' : 'pointer'
-                }}
-              >
-                {isCameraStarting ? 'Solicitando Permisos...' : 'Activar Cámara Ahora'}
-              </button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#A5B4FC' }}>
+              <HelpCircle size={18} />
+              <span>Cómo habilitar los permisos de cámara en tu navegador:</span>
             </div>
-          )}
-
-          {/* Real-time HUD Pill Overlay (Bottom) */}
-          {isCameraActive && (
-            <div
-              style={{
-                position: 'absolute',
-                bottom: 12,
-                left: 12,
-                right: 12,
-                background: 'rgba(9, 13, 22, 0.92)',
-                border: '1px solid #334155',
-                padding: '10px 14px',
-                borderRadius: 4,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                zIndex: 20
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    background: currentAnalysis.depthReached
-                      ? '#10B981'
-                      : currentAnalysis.kneeValgusWarning
-                      ? '#EF4444'
-                      : '#F59E0B'
-                  }}
-                />
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#F8FAFC' }}>
-                  {currentAnalysis.feedbackMessage}
-                </span>
-              </div>
-
-              <span
-                style={{
-                  fontSize: 11,
-                  fontFamily: 'monospace',
-                  padding: '2px 8px',
-                  borderRadius: 3,
-                  background: '#1E293B',
-                  color: '#38BDF8'
-                }}
-              >
-                Fase: {currentAnalysis.phase}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Right Column: Metrics & Biomechanical Feedback Dashboard */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Big Rep Counter Hero */}
-          <div
-            style={{
-              background: '#090D16',
-              border: '1px solid #1E293B',
-              borderRadius: 4,
-              padding: 16,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
-            }}
-          >
-            <div>
-              <span style={{ fontSize: 11, color: '#64748B', textTransform: 'uppercase', display: 'block' }}>
-                REPETICIONES VÁLIDAS DETECTADAS
-              </span>
-              <span style={{ fontSize: 44, fontWeight: 900, color: '#38BDF8', fontFamily: 'monospace', lineHeight: 1.1 }}>
-                {repCount}
-              </span>
-            </div>
-
             <button
               onClick={() => {
-                setRepCount(0);
-                repStateRef.current.state = 'TOP';
-                repStateRef.current.minKneeAngle = 180;
+                setShowPermissionHelp(false);
+                setErrorMessage(null);
               }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '6px 12px',
-                background: '#0F172A',
-                border: '1px solid #334155',
-                color: '#94A3B8',
-                borderRadius: 4,
-                cursor: 'pointer',
-                fontSize: 12
-              }}
+              style={{ background: 'transparent', border: 'none', color: '#A5B4FC', cursor: 'pointer', fontSize: 12 }}
             >
-              <RotateCcw size={13} /> Reiniciar
+              Cerrar
             </button>
           </div>
 
-          {/* Real-time Angle Gauges */}
-          <div style={{ background: '#090D16', border: '1px solid #1E293B', borderRadius: 4, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F8FAFC', textTransform: 'uppercase' }}>
-              Telemetría Articular en Vivo
-            </h4>
+          <p style={{ margin: 0, fontSize: 12 }}>
+            {errorMessage || 'Para que la visión artificial funcione, el navegador necesita permiso para abrir la cámara.'}
+          </p>
 
-            {/* Knee Angle Bar */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: '#94A3B8' }}>Ángulo de Rodilla (Profundidad):</span>
-                <strong style={{ color: currentAnalysis.depthReached ? '#10B981' : '#F59E0B' }}>
-                  {currentAnalysis.kneeAngleDeg}° {currentAnalysis.depthReached ? '(Paralelo OK)' : ''}
-                </strong>
+          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: '#CBD5E1' }}>
+            <li>
+              Asegúrate de estar en <strong>https://localhost:5173</strong>. Si tu navegador te mostró *"La conexión no es privada"*, haz clic en <strong>"Configuración avanzada" $\rightarrow$ "Continuar a localhost (no seguro)"</strong>.
+            </li>
+            <li>
+              Haz clic en el <strong>ícono de candado o ajustes</strong> a la izquierda de la URL en la barra de direcciones de Chrome/Edge.
+            </li>
+            <li>
+              Busca la opción <strong>Cámara</strong> y cámbiala de "Bloqueado" o "Preguntar" a <strong>"Permitir"</strong>.
+            </li>
+            <li>
+              Recarga la página y vuelve a pulsar <strong>"Activar Cámara"</strong>.
+            </li>
+          </ol>
+        </div>
+      )}
+
+      {/* Main Dual Work Area */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            layoutMode === 'split'
+              ? 'minmax(320px, 1fr) minmax(320px, 1.2fr)'
+              : '1fr',
+          gap: 16
+        }}
+      >
+        {/* LEFT / TOP PANEL: Exercise Guide (3D Simulation or Video) */}
+        {layoutMode !== 'camera' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Guide Header & Tabs */}
+            <div
+              style={{
+                background: '#090D16',
+                border: '1px solid #1E293B',
+                borderRadius: 4,
+                padding: '10px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 8
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Zap size={15} color="#38BDF8" />
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#F8FAFC', textTransform: 'uppercase' }}>
+                  Técnica de Referencia
+                </span>
               </div>
-              <div style={{ height: 8, background: '#1E293B', borderRadius: 3, overflow: 'hidden' }}>
-                <div
-                  style={{
-                    width: `${Math.min(100, Math.max(0, ((180 - currentAnalysis.kneeAngleDeg) / 100) * 100))}%`,
-                    height: '100%',
-                    background: currentAnalysis.depthReached ? '#10B981' : '#38BDF8',
-                    transition: 'width 0.08s linear'
-                  }}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748B', marginTop: 3 }}>
-                <span>180° (De pie)</span>
-                <span>90° (Profundidad reglamentaria)</span>
+
+              {/* Sub-tabs */}
+              <div style={{ display: 'flex', background: '#0F172A', border: '1px solid #334155', borderRadius: 4, padding: 2 }}>
+                {[
+                  { id: 'simulacion', label: 'Simulación 3D', icon: Zap },
+                  { id: 'video', label: 'Video Real', icon: Video },
+                  { id: 'tecnica', label: 'Checklist', icon: ListChecks }
+                ].map((tab) => {
+                  const Icon = tab.icon;
+                  const isActive = referenceMode === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => setReferenceMode(tab.id as typeof referenceMode)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '4px 8px',
+                        background: isActive ? '#1E293B' : 'transparent',
+                        color: isActive ? '#38BDF8' : '#94A3B8',
+                        border: 'none',
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: isActive ? 700 : 500
+                      }}
+                    >
+                      <Icon size={12} />
+                      <span>{tab.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Hip Angle Bar */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: '#94A3B8' }}>Bisagra de Cadera (Inclinación Torso):</span>
-                <strong style={{ color: currentAnalysis.torsoWarning ? '#EF4444' : '#F8FAFC' }}>
-                  {currentAnalysis.hipAngleDeg}°
-                </strong>
+            {/* Render Reference Content */}
+            {referenceMode === 'simulacion' && (
+              <BiomechanicalSimulation
+                type={currentExercise.simulationType}
+                exerciseName={currentExercise.name}
+                tempo={currentExercise.tempo}
+              />
+            )}
+
+            {referenceMode === 'video' && (
+              <div style={{ background: '#090D16', border: '1px solid #1E293B', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ position: 'relative', width: '100%', paddingBottom: '56.25%', height: 0, background: '#000' }}>
+                  <iframe
+                    src={`https://www.youtube-nocookie.com/embed/${currentExercise.videoEmbedId}?rel=0&modestbranding=1`}
+                    title={currentExercise.name}
+                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 'none' }}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                </div>
               </div>
-              <div style={{ height: 8, background: '#1E293B', borderRadius: 3, overflow: 'hidden' }}>
-                <div
+            )}
+
+            {referenceMode === 'tecnica' && (
+              <div style={{ background: '#090D16', border: '1px solid #1E293B', borderRadius: 4, padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ fontSize: 12 }}>
+                  <strong style={{ color: '#38BDF8', display: 'block', marginBottom: 4 }}>Protocolo de Respiración:</strong>
+                  <p style={{ margin: 0, color: '#CBD5E1', lineHeight: 1.5 }}>{currentExercise.breathing}</p>
+                </div>
+                <div style={{ fontSize: 12 }}>
+                  <strong style={{ color: '#F59E0B', display: 'block', marginBottom: 4 }}>Puntos de Ejecución:</strong>
+                  <ul style={{ margin: 0, paddingLeft: 18, color: '#CBD5E1', lineHeight: 1.5 }}>
+                    {currentExercise.execution.map((e, idx) => (
+                      <li key={idx} style={{ marginBottom: 4 }}>{e}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* RIGHT / BOTTOM PANEL: Real-time Camera Feed & Telemetry HUD */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Video Canvas Box */}
+          <div
+            style={{
+              position: 'relative',
+              width: '100%',
+              height: layoutMode === 'stacked' ? 440 : 480,
+              background: '#030712',
+              border: '1px solid #1E293B',
+              borderRadius: 4,
+              overflow: 'hidden',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            <video
+              ref={videoRef}
+              playsInline
+              muted
+              style={{
+                position: 'absolute',
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                transform: 'scaleX(-1)'
+              }}
+            />
+
+            <canvas
+              ref={canvasRef}
+              style={{
+                position: 'absolute',
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                transform: 'scaleX(-1)'
+              }}
+            />
+
+            {/* Fallback placeholder when camera is not on */}
+            {!isCameraActive && (
+              <div style={{ textAlign: 'center', color: '#64748B', padding: 24, zIndex: 10, maxWidth: 380 }}>
+                <Camera size={48} style={{ margin: '0 auto 12px auto', strokeWidth: 1.5, color: '#334155' }} />
+                <p style={{ margin: '0 0 8px 0', fontSize: 14, color: '#CBD5E1', fontWeight: 600 }}>
+                  Tu cámara está desactivada
+                </p>
+                <p style={{ margin: '0 0 16px 0', fontSize: 12, color: '#94A3B8', lineHeight: 1.5 }}>
+                  Actívala para compararte en vivo con la técnica de referencia de la izquierda.
+                </p>
+                <button
+                  onClick={startCamera}
+                  disabled={isCameraStarting}
                   style={{
-                    width: `${Math.min(100, Math.max(0, ((180 - currentAnalysis.hipAngleDeg) / 110) * 100))}%`,
-                    height: '100%',
-                    background: currentAnalysis.torsoWarning ? '#EF4444' : '#F59E0B',
-                    transition: 'width 0.08s linear'
+                    padding: '10px 20px',
+                    background: '#0284C7',
+                    color: '#F8FAFC',
+                    border: 'none',
+                    borderRadius: 4,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: isCameraStarting ? 'wait' : 'pointer'
                   }}
-                />
+                >
+                  {isCameraStarting ? 'Solicitando Permisos...' : 'Activar Cámara Ahora'}
+                </button>
               </div>
-            </div>
+            )}
+
+            {/* Real-time HUD Pill Overlay (Bottom) */}
+            {isCameraActive && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 12,
+                  left: 12,
+                  right: 12,
+                  background: 'rgba(9, 13, 22, 0.92)',
+                  border: '1px solid #334155',
+                  padding: '10px 14px',
+                  borderRadius: 4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  zIndex: 20
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: '50%',
+                      background: currentAnalysis.depthReached
+                        ? '#10B981'
+                        : currentAnalysis.kneeValgusWarning
+                        ? '#EF4444'
+                        : '#F59E0B'
+                    }}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#F8FAFC' }}>
+                    {currentAnalysis.feedbackMessage}
+                  </span>
+                </div>
+
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    padding: '2px 8px',
+                    borderRadius: 3,
+                    background: '#1E293B',
+                    color: '#38BDF8'
+                  }}
+                >
+                  Fase: {currentAnalysis.phase}
+                </span>
+              </div>
+            )}
           </div>
 
-          {/* Form Quality Checklist */}
-          <div style={{ background: '#090D16', border: '1px solid #1E293B', borderRadius: 4, padding: 16 }}>
-            <h4 style={{ margin: '0 0 10px 0', fontSize: 13, fontWeight: 700, color: '#F8FAFC', textTransform: 'uppercase' }}>
-              Checklist de Seguridad
-            </h4>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {currentAnalysis.depthReached ? (
-                  <CheckCircle2 size={16} color="#10B981" />
-                ) : (
-                  <span style={{ width: 16, height: 16, borderRadius: '50%', border: '1px solid #64748B' }} />
-                )}
-                <span style={{ color: currentAnalysis.depthReached ? '#F8FAFC' : '#94A3B8' }}>
-                  Profundidad mínima alcanzada (rodilla a 90°)
+          {/* Metrics & Rep Counter Row */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: 12 }}>
+            {/* Rep Counter */}
+            <div
+              style={{
+                background: '#090D16',
+                border: '1px solid #1E293B',
+                borderRadius: 4,
+                padding: 14,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}
+            >
+              <div>
+                <span style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', display: 'block' }}>
+                  REPETICIONES VÁLIDAS
+                </span>
+                <span style={{ fontSize: 36, fontWeight: 900, color: '#38BDF8', fontFamily: 'monospace', lineHeight: 1.1 }}>
+                  {repCount}
                 </span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {!currentAnalysis.kneeValgusWarning ? (
-                  <CheckCircle2 size={16} color="#10B981" />
-                ) : (
-                  <AlertTriangle size={16} color="#EF4444" />
-                )}
-                <span style={{ color: !currentAnalysis.kneeValgusWarning ? '#F8FAFC' : '#EF4444' }}>
-                  {currentAnalysis.kneeValgusWarning ? 'Peligro: Colapso de rodillas en valgo' : 'Alineación de rodillas con puntas de pie'}
-                </span>
+              <button
+                onClick={() => {
+                  setRepCount(0);
+                  repStateRef.current.state = 'TOP';
+                  repStateRef.current.minKneeAngle = 180;
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '4px 8px',
+                  background: '#0F172A',
+                  border: '1px solid #334155',
+                  color: '#94A3B8',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                  fontSize: 11
+                }}
+              >
+                <RotateCcw size={12} /> Reiniciar
+              </button>
+            </div>
+
+            {/* Gauges */}
+            <div style={{ background: '#090D16', border: '1px solid #1E293B', borderRadius: 4, padding: '10px 14px', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8 }}>
+              {/* Knee Bar */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 2 }}>
+                  <span style={{ color: '#94A3B8' }}>Rodilla (Profundidad):</span>
+                  <strong style={{ color: currentAnalysis.depthReached ? '#10B981' : '#F59E0B' }}>
+                    {currentAnalysis.kneeAngleDeg}° {currentAnalysis.depthReached ? '(Paralelo OK)' : ''}
+                  </strong>
+                </div>
+                <div style={{ height: 6, background: '#1E293B', borderRadius: 2, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${Math.min(100, Math.max(0, ((180 - currentAnalysis.kneeAngleDeg) / 100) * 100))}%`,
+                      height: '100%',
+                      background: currentAnalysis.depthReached ? '#10B981' : '#38BDF8'
+                    }}
+                  />
+                </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {!currentAnalysis.torsoWarning ? (
-                  <CheckCircle2 size={16} color="#10B981" />
-                ) : (
-                  <AlertTriangle size={16} color="#EF4444" />
-                )}
-                <span style={{ color: !currentAnalysis.torsoWarning ? '#F8FAFC' : '#EF4444' }}>
-                  {currentAnalysis.torsoWarning ? 'Alerta: Torso excesivamente inclinado al frente' : 'Postura de columna y torso neutro'}
-                </span>
+              {/* Torso Bar */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 2 }}>
+                  <span style={{ color: '#94A3B8' }}>Cadera (Torso erguido):</span>
+                  <strong style={{ color: currentAnalysis.torsoWarning ? '#EF4444' : '#F8FAFC' }}>
+                    {currentAnalysis.hipAngleDeg}°
+                  </strong>
+                </div>
+                <div style={{ height: 6, background: '#1E293B', borderRadius: 2, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${Math.min(100, Math.max(0, ((180 - currentAnalysis.hipAngleDeg) / 110) * 100))}%`,
+                      height: '100%',
+                      background: currentAnalysis.torsoWarning ? '#EF4444' : '#F59E0B'
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>

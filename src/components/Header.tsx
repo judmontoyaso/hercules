@@ -1,9 +1,11 @@
 import React from 'react';
-import { Dumbbell, ListOrdered, BookOpen, History, Sliders } from 'lucide-react';
+import { Dumbbell, ListOrdered, BookOpen, History, Sliders, Camera } from 'lucide-react';
+
+export type TabType = 'rutina' | 'camara' | 'biblioteca' | 'calculadora' | 'historial';
 
 interface HeaderProps {
-  currentTab: 'rutina' | 'biblioteca' | 'calculadora' | 'historial';
-  onSelectTab: (tab: 'rutina' | 'biblioteca' | 'calculadora' | 'historial') => void;
+  currentTab: TabType;
+  onSelectTab: (tab: TabType) => void;
   isWorkoutActive: boolean;
   onReturnToWorkout?: () => void;
 }
@@ -82,6 +84,7 @@ export const Header: React.FC<HeaderProps> = ({
         <nav style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           {[
             { id: 'rutina', label: 'Rutina', icon: ListOrdered },
+            { id: 'camara', label: 'Cámara IA', icon: Camera },
             { id: 'biblioteca', label: 'Ejercicios 3D', icon: BookOpen },
             { id: 'calculadora', label: 'Armar Mancuernas', icon: Sliders },
             { id: 'historial', label: 'Historial', icon: History }

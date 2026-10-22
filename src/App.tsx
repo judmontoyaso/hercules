@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
 import { Header } from './components/Header';
+import type { TabType } from './components/Header';
 import { RoutineOverview } from './components/RoutineOverview';
 import { ExerciseLibrary } from './components/ExerciseLibrary';
 import { PlateCalculator } from './components/PlateCalculator';
 import { WorkoutHistory } from './components/WorkoutHistory';
 import { WorkoutRunner } from './components/WorkoutRunner';
 import { ExerciseDetailModal } from './components/ExerciseDetailModal';
+import { PoseTracker } from './components/PoseTracker';
 import { DEFAULT_ROUTINES } from './data/routines';
 import type { Exercise, WorkoutSession } from './types/workout';
 import { Trophy } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<'rutina' | 'biblioteca' | 'calculadora' | 'historial'>('rutina');
+  const [currentTab, setCurrentTab] = useState<TabType>('rutina');
+  const [selectedExerciseForCamera, setSelectedExerciseForCamera] = useState<string>('goblet-squat');
   const [isWorkoutRunning, setIsWorkoutRunning] = useState<boolean>(false);
   const [selectedExerciseForModal, setSelectedExerciseForModal] = useState<Exercise | null>(null);
   const [completedSessionResult, setCompletedSessionResult] = useState<WorkoutSession | null>(null);
@@ -58,6 +61,12 @@ export const App: React.FC = () => {
               />
             )}
 
+            {currentTab === 'camara' && (
+              <PoseTracker
+                initialExerciseId={selectedExerciseForCamera}
+              />
+            )}
+
             {currentTab === 'biblioteca' && (
               <ExerciseLibrary
                 onSelectExercise={(ex) => setSelectedExerciseForModal(ex)}
@@ -83,6 +92,10 @@ export const App: React.FC = () => {
       <ExerciseDetailModal
         exercise={selectedExerciseForModal}
         onClose={() => setSelectedExerciseForModal(null)}
+        onOpenPoseTracker={(ex) => {
+          setSelectedExerciseForCamera(ex.id);
+          setCurrentTab('camara');
+        }}
         onSelectExerciseForSession={() => {
           setSelectedExerciseForModal(null);
           setIsWorkoutRunning(true);

@@ -12,19 +12,22 @@ import {
   Lightbulb,
   Wind,
   Shield,
-  Dumbbell
+  Dumbbell,
+  Camera
 } from 'lucide-react';
 
 interface ExerciseDetailModalProps {
   exercise: Exercise | null;
   onClose: () => void;
   onSelectExerciseForSession?: (exercise: Exercise) => void;
+  onOpenPoseTracker?: (exercise: Exercise) => void;
 }
 
 export const ExerciseDetailModal: React.FC<ExerciseDetailModalProps> = ({
   exercise,
   onClose,
-  onSelectExerciseForSession
+  onSelectExerciseForSession,
+  onOpenPoseTracker
 }) => {
   if (!exercise) return null;
 
@@ -409,6 +412,30 @@ export const ExerciseDetailModal: React.FC<ExerciseDetailModalProps> = ({
             >
               Cerrar
             </button>
+            {onOpenPoseTracker && (
+              <button
+                onClick={() => {
+                  onOpenPoseTracker(exercise);
+                  onClose();
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 14px',
+                  background: '#1E293B',
+                  color: '#38BDF8',
+                  border: '1px solid #38BDF8',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600
+                }}
+              >
+                <Camera size={14} />
+                <span>Cámara IA</span>
+              </button>
+            )}
             {onSelectExerciseForSession && (
               <button
                 onClick={() => {

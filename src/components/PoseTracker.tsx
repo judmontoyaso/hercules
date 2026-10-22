@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FilesetResolver, PoseLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
+import { FilesetResolver, PoseLandmarker, FaceLandmarker, DrawingUtils } from '@mediapipe/tasks-vision';
 import { EXERCISES } from '../data/exercises';
 import { audioEngine } from '../utils/audio';
 import { BiomechanicalSimulation } from './BiomechanicalSimulation';
+import {
+  getStoredAthleteProfile,
+  extractBiometricVector,
+  calculateFaceMatch
+} from '../utils/faceBiometrics';
+import type { AthleteProfile } from '../utils/faceBiometrics';
 import {
   Camera,
   VideoOff,
@@ -18,12 +24,16 @@ import {
   ListChecks,
   HelpCircle,
   Layers,
-  Sparkles
+  Sparkles,
+  ShieldCheck,
+  User
 } from 'lucide-react';
 
 interface PoseTrackerProps {
   initialExerciseId?: string;
   onRepCountUpdate?: (exerciseId: string, completedReps: number) => void;
+  onOpenProfileModal?: () => void;
+  athleteProfile?: AthleteProfile | null;
 }
 
 interface BiomechanicalAnalysis {
@@ -38,7 +48,9 @@ interface BiomechanicalAnalysis {
 
 export const PoseTracker: React.FC<PoseTrackerProps> = ({
   initialExerciseId = 'goblet-squat',
-  onRepCountUpdate
+  onRepCountUpdate,
+  onOpenProfileModal,
+  athleteProfile
 }) => {
   const [selectedExerciseId, setSelectedExerciseId] = useState<string>(initialExerciseId);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
@@ -48,6 +60,23 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showPermissionHelp, setShowPermissionHelp] = useState<boolean>(false);
   const [voiceFeedbackEnabled, setVoiceFeedbackEnabled] = useState<boolean>(true);
+
+  // Biometric Facial Recognition State
+  const [recognizedAthlete, setRecognizedAthlete] = useState<{
+    name: string;
+    similarity: number;
+  } | null>(null);
+  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+  const faceFrameCountRef = useRef<number>(0);
+  const hasGreetedAthleteRef = useRef<boolean>(false);
+  const storedAthleteRef = useRef<AthleteProfile | null>(athleteProfile ?? getStoredAthleteProfile());
+
+  useEffect(() => {
+    storedAthleteRef.current = athleteProfile !== undefined ? athleteProfile : getStoredAthleteProfile();
+    if (!storedAthleteRef.current) {
+      setRecognizedAthlete(null);
+    }
+  }, [athleteProfile]);
 
   // Layout states: 'split' (Lado a lado), 'stacked' (Arriba y abajo), 'camera' (Solo cámara)
   const [layoutMode, setLayoutMode] = useState<'split' | 'stacked' | 'camera'>('split');
@@ -165,8 +194,39 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
       }
 
       poseLandmarkerRef.current = landmarker;
+
+      // Initialize FaceLandmarker for biometric facial recognition
+      try {
+        const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+            delegate: 'GPU'
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1
+        });
+        faceLandmarkerRef.current = faceLandmarker;
+      } catch (fErr) {
+        console.warn('FaceLandmarker GPU init failed, trying CPU:', fErr);
+        try {
+          const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath:
+                'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+              delegate: 'CPU'
+            },
+            runningMode: 'VIDEO',
+            numFaces: 1
+          });
+          faceLandmarkerRef.current = faceLandmarker;
+        } catch (fCpuErr) {
+          console.warn('FaceLandmarker load failed:', fCpuErr);
+        }
+      }
+
       setIsModelLoaded(true);
-      setModelStatusText('Modelo IA listo');
+      setModelStatusText('Modelos IA listos (Cuerpo + Rostro)');
     } catch (err: unknown) {
       console.error('Failed to load MediaPipe model:', err);
       setModelStatusText('Error al cargar modelo IA');
@@ -183,6 +243,10 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
       if (poseLandmarkerRef.current) {
         poseLandmarkerRef.current.close();
         poseLandmarkerRef.current = null;
+      }
+      if (faceLandmarkerRef.current) {
+        faceLandmarkerRef.current.close();
+        faceLandmarkerRef.current = null;
       }
     };
   }, []);
@@ -477,6 +541,62 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
                   lineWidth: 2,
                   radius: 5
                 });
+
+                // 3. FACIAL BIOMETRIC RECOGNITION (Evaluated every 10 frames)
+                faceFrameCountRef.current++;
+                if (faceLandmarkerRef.current && faceFrameCountRef.current % 10 === 0) {
+                  try {
+                    const faceResults = faceLandmarkerRef.current.detectForVideo(video, nowMs);
+                    if (faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0) {
+                      const faceLms = faceResults.faceLandmarks[0];
+                      const currentFaceVec = extractBiometricVector(faceLms);
+                      const currentAthlete = storedAthleteRef.current || getStoredAthleteProfile();
+
+                      if (currentAthlete && currentAthlete.biometricVector?.length > 0 && currentFaceVec.length > 0) {
+                        const matchResult = calculateFaceMatch(currentAthlete.biometricVector, currentFaceVec);
+                        if (matchResult.isMatch) {
+                          setRecognizedAthlete({
+                            name: currentAthlete.name,
+                            similarity: matchResult.similarityPercent
+                          });
+
+                          if (!hasGreetedAthleteRef.current) {
+                            hasGreetedAthleteRef.current = true;
+                            speakFeedback(`Hola ${currentAthlete.name}, atleta identificado`, true);
+                          }
+                        } else {
+                          setRecognizedAthlete(null);
+                        }
+                      }
+                    } else {
+                      setRecognizedAthlete(null);
+                    }
+                  } catch (faceErr) {
+                    // skip frame
+                  }
+                }
+
+                // Draw Biometric Reticle around Face on canvas
+                if (landmarks[0]) {
+                  const noseCanvasX = landmarks[0].x * canvas.width;
+                  const noseCanvasY = landmarks[0].y * canvas.height;
+                  const headBoxSize = Math.max(50, Math.min(100, Math.abs(ankle.y - shoulder.y) * canvas.height * 0.22));
+
+                  ctx.save();
+                  ctx.strokeStyle = recognizedAthlete ? '#10B981' : '#38BDF8';
+                  ctx.lineWidth = 2;
+                  const hx = noseCanvasX - headBoxSize / 2;
+                  const hy = noseCanvasY - headBoxSize / 2 - 10;
+                  const cLen = 12;
+
+                  ctx.beginPath();
+                  ctx.moveTo(hx, hy + cLen); ctx.lineTo(hx, hy); ctx.lineTo(hx + cLen, hy);
+                  ctx.moveTo(hx + headBoxSize - cLen, hy); ctx.lineTo(hx + headBoxSize, hy); ctx.lineTo(hx + headBoxSize, hy + cLen);
+                  ctx.moveTo(hx, hy + headBoxSize - cLen); ctx.lineTo(hx, hy + headBoxSize); ctx.lineTo(hx + cLen, hy + headBoxSize);
+                  ctx.moveTo(hx + headBoxSize - cLen, hy + headBoxSize); ctx.lineTo(hx + headBoxSize, hy + headBoxSize); ctx.lineTo(hx + headBoxSize, hy + headBoxSize - cLen);
+                  ctx.stroke();
+                  ctx.restore();
+                }
 
                 const kneeValgus = Math.abs(leftKnee.x - rightKnee.x) < Math.abs(leftAnkle.x - rightAnkle.x) * 0.75;
                 const torsoTooForward = hipAngle < 65;
@@ -1067,26 +1187,67 @@ export const PoseTracker: React.FC<PoseTrackerProps> = ({
                   )}
                 </div>
 
-                {/* Right: Real-time Match Score Badge */}
-                {showGhostOverlay && isBodyDetected && (
-                  <div
-                    style={{
-                      background: matchScore >= 80 ? 'rgba(6, 78, 59, 0.92)' : 'rgba(120, 53, 15, 0.92)',
-                      border: '1px solid',
-                      borderColor: matchScore >= 80 ? '#10B981' : '#F59E0B',
-                      borderRadius: 4,
-                      padding: '4px 10px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6
-                    }}
-                  >
-                    <Sparkles size={13} color={matchScore >= 80 ? '#10B981' : '#F59E0B'} />
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#F8FAFC' }}>
-                      Calce con Guía: {matchScore}%
-                    </span>
-                  </div>
-                )}
+                {/* Right side: Biometric Face Match & Ghost Calce Badge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {recognizedAthlete ? (
+                    <div
+                      style={{
+                        background: 'rgba(6, 78, 59, 0.92)',
+                        border: '1px solid #10B981',
+                        borderRadius: 4,
+                        padding: '4px 8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                    >
+                      <ShieldCheck size={13} color="#10B981" />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#F8FAFC' }}>
+                        {recognizedAthlete.name} ({recognizedAthlete.similarity}%)
+                      </span>
+                    </div>
+                  ) : onOpenProfileModal ? (
+                    <button
+                      onClick={onOpenProfileModal}
+                      style={{
+                        background: 'rgba(15, 23, 42, 0.9)',
+                        border: '1px solid #334155',
+                        borderRadius: 4,
+                        padding: '4px 8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: '#CBD5E1',
+                        cursor: 'pointer',
+                        fontSize: 10,
+                        fontWeight: 600
+                      }}
+                    >
+                      <User size={12} color="#38BDF8" />
+                      <span>Registrar Rostro</span>
+                    </button>
+                  ) : null}
+
+                  {showGhostOverlay && isBodyDetected && (
+                    <div
+                      style={{
+                        background: matchScore >= 80 ? 'rgba(6, 78, 59, 0.92)' : 'rgba(120, 53, 15, 0.92)',
+                        border: '1px solid',
+                        borderColor: matchScore >= 80 ? '#10B981' : '#F59E0B',
+                        borderRadius: 4,
+                        padding: '4px 10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                    >
+                      <Sparkles size={13} color={matchScore >= 80 ? '#10B981' : '#F59E0B'} />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#F8FAFC' }}>
+                        Calce: {matchScore}%
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

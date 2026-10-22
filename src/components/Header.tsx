@@ -1,5 +1,5 @@
 import React from 'react';
-import { Dumbbell, ListOrdered, BookOpen, History, Sliders, Camera } from 'lucide-react';
+import { Dumbbell, ListOrdered, BookOpen, History, Sliders, Camera, User } from 'lucide-react';
 
 export type TabType = 'rutina' | 'camara' | 'biblioteca' | 'calculadora' | 'historial';
 
@@ -8,13 +8,17 @@ interface HeaderProps {
   onSelectTab: (tab: TabType) => void;
   isWorkoutActive: boolean;
   onReturnToWorkout?: () => void;
+  athleteName?: string | null;
+  onOpenProfileModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   currentTab,
   onSelectTab,
   isWorkoutActive,
-  onReturnToWorkout
+  onReturnToWorkout,
+  athleteName,
+  onOpenProfileModal
 }) => {
   return (
     <header
@@ -118,8 +122,32 @@ export const Header: React.FC<HeaderProps> = ({
           })}
         </nav>
 
-        {/* Live session active indicator */}
-        <div>
+        {/* Right side: Athlete Profile & Session status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {onOpenProfileModal && (
+            <button
+              onClick={onOpenProfileModal}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '5px 10px',
+                background: athleteName ? '#0B2519' : '#0F172A',
+                border: '1px solid',
+                borderColor: athleteName ? '#10B981' : '#334155',
+                color: athleteName ? '#10B981' : '#CBD5E1',
+                borderRadius: 4,
+                cursor: 'pointer',
+                fontSize: 11,
+                fontWeight: 600
+              }}
+              title="Gestionar Perfil Biométrico"
+            >
+              <User size={13} color={athleteName ? '#10B981' : '#38BDF8'} />
+              <span>{athleteName ? athleteName : 'Registrar Rostro'}</span>
+            </button>
+          )}
+
           {isWorkoutActive && onReturnToWorkout && (
             <button
               onClick={onReturnToWorkout}

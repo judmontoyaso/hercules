@@ -8,7 +8,10 @@ import { WorkoutHistory } from './components/WorkoutHistory';
 import { WorkoutRunner } from './components/WorkoutRunner';
 import { ExerciseDetailModal } from './components/ExerciseDetailModal';
 import { PoseTracker } from './components/PoseTracker';
+import { AthleteProfileModal } from './components/AthleteProfileModal';
 import { DEFAULT_ROUTINES } from './data/routines';
+import { getStoredAthleteProfile } from './utils/faceBiometrics';
+import type { AthleteProfile } from './utils/faceBiometrics';
 import type { Exercise, WorkoutSession } from './types/workout';
 import { Trophy } from 'lucide-react';
 
@@ -18,6 +21,8 @@ export const App: React.FC = () => {
   const [isWorkoutRunning, setIsWorkoutRunning] = useState<boolean>(false);
   const [selectedExerciseForModal, setSelectedExerciseForModal] = useState<Exercise | null>(null);
   const [completedSessionResult, setCompletedSessionResult] = useState<WorkoutSession | null>(null);
+  const [athleteProfile, setAthleteProfile] = useState<AthleteProfile | null>(() => getStoredAthleteProfile());
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
 
   const mainRoutine = DEFAULT_ROUTINES[0];
 
@@ -41,6 +46,8 @@ export const App: React.FC = () => {
         }}
         isWorkoutActive={isWorkoutRunning}
         onReturnToWorkout={() => setIsWorkoutRunning(true)}
+        athleteName={athleteProfile?.name}
+        onOpenProfileModal={() => setIsProfileModalOpen(true)}
       />
 
       {/* Main Container */}
@@ -64,6 +71,8 @@ export const App: React.FC = () => {
             {currentTab === 'camara' && (
               <PoseTracker
                 initialExerciseId={selectedExerciseForCamera}
+                athleteProfile={athleteProfile}
+                onOpenProfileModal={() => setIsProfileModalOpen(true)}
               />
             )}
 
@@ -99,6 +108,15 @@ export const App: React.FC = () => {
         onSelectExerciseForSession={() => {
           setSelectedExerciseForModal(null);
           setIsWorkoutRunning(true);
+        }}
+      />
+
+      {/* Athlete Biometric Profile Modal */}
+      <AthleteProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        onProfileUpdated={(updatedProfile) => {
+          setAthleteProfile(updatedProfile);
         }}
       />
 
